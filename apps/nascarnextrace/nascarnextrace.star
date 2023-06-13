@@ -6,7 +6,6 @@ Author: jvivona
 """
 
 load("animation.star", "animation")
-load("cache.star", "cache")
 load("encoding/json.star", "json")
 load("http.star", "http")
 load("math.star", "math")
@@ -14,7 +13,7 @@ load("render.star", "render")
 load("schema.star", "schema")
 load("time.star", "time")
 
-VERSION = 23043
+VERSION = 23132
 
 # cache data for 15 minutes - cycle through with cache on the API side
 CACHE_TTL_SECONDS = 900
@@ -432,26 +431,25 @@ def title_box(series, display):
     )
 
 def get_cachable_data(url):
-    key = url
-
-    data = cache.get(key)
-    if data != None:
-        return data
-
-    res = http.get(url = url)
+    res = http.get(url = url, ttl_seconds = CACHE_TTL_SECONDS)
     if res.status_code != 200:
         fail("request to %s failed with status code: %d - %s" % (url, res.status_code, res.body()))
-
-    cache.set(key, res.body(), ttl_seconds = CACHE_TTL_SECONDS)
 
     return res.body()
 
 def text_justify_trunc(length, text, direction):
-    if len(text) < length:
-        for _ in range(0, length - len(text)):
-            text = " " + text if direction == "right" else text + " "
+    #  thanks to @inxi and @whyamihere / @rs7q5 for the codepoints() and codepoints_ords() help
+    chars = list(text.codepoints())
+    textlen = len(chars)
 
+    # if string is shorter than desired - we can just use the count of chars (not bytes) and add on spaces - we're good
+    if textlen < length:
+        for _ in range(0, length - textlen):
+            text = " " + text if direction == "right" else text + " "
     else:
-        # text is longer - need to trunc it
-        text = text[0:length]
+        # text is longer - need to trunc it get the list of characters & trunc at length
+        text = ""  # clear out text
+        for i in range(0, length):
+            text = text + chars[i]
+
     return text

@@ -41,6 +41,7 @@ def main(config):
 
     # Options
     skipRenderIfAllGreen = config.bool("skipRenderIfAllGreen")
+    onlyDisplayNotNormal = config.bool("onlyDisplayNotNormal")
 
     hidePm25 = config.bool("hidePm25")
     hideVoc = config.bool("hideVoc")
@@ -119,18 +120,21 @@ def main(config):
         humidity_color = "#ff0"
 
     allGreen = True
-    for (sample, hidden) in [
-        (co2_color, hideCo2),
-        (pm25_color, hidePm25),
-        (temp_color, hideTemp),
-        (voc_color, hideVoc),
-        (humidity_color, hideHumidity),
+    nonNormalValues = []
+    for (sample, hidden, displayName) in [
+        (co2_color, hideCo2, "Co2"),
+        (pm25_color, hidePm25, "Pm2.5"),
+        (temp_color, hideTemp, "Temp"),
+        (voc_color, hideVoc, "VOC"),
+        (humidity_color, hideHumidity, "Humidity"),
     ]:
-        if hidden:
+        if not onlyDisplayNotNormal and hidden:
             continue
 
         if not sample == "#0f0":
             allGreen = False
+            if onlyDisplayNotNormal:
+                nonNormalValues.append(displayName)
             break
 
     if skipRenderIfAllGreen and allGreen:
@@ -146,7 +150,10 @@ def main(config):
         (hideVoc, voc, voc_color, "VOC"),
         (hideHumidity, humidity, humidity_color, "Humidity"),
     ]:
-        if hide:
+        if not onlyDisplayNotNormal and hide:
+            continue
+
+        if onlyDisplayNotNormal and not displayName in nonNormalValues:
             continue
 
         items.append(
@@ -190,6 +197,7 @@ def get_samples(config, access_token, SAMPLES_CACHE_KEY):
     status = res.json()
 
     # Cache samples for 5 minutes
+    # TODO: Determine if this cache call can be converted to the new HTTP cache.
     cache.set(SAMPLES_CACHE_KEY, res.body(), 60 * 5)
 
     return status
@@ -217,6 +225,7 @@ def client_credentials_grant_flow(config, access_token_cache_key):
     if res.status_code == 200:
         print("Success")
     else:
+        # TODO: Determine if this cache call can be converted to the new HTTP cache.
         cache.set(access_token_cache_key, "")
         print("Error Fetching access_token: %s" % (res.body()))
         fail("token request failed with status code: %d - %s" % (res.status_code, res.body()))
@@ -225,6 +234,7 @@ def client_credentials_grant_flow(config, access_token_cache_key):
     access_token = token_params["access_token"]
     expires_in = token_params["expires_in"]
 
+    # TODO: Determine if this cache call can be converted to the new HTTP cache.
     cache.set(access_token_cache_key, access_token, ttl_seconds = int(expires_in) - 30)
     return access_token
 
@@ -235,25 +245,32 @@ def get_schema():
             schema.Text(
                 id = "clientSecret",
                 name = "AirThings API Client Secret",
-                desc = "API secret from https://dashboard.airthings.com/integrations/api-integration",
+                desc = "REQUIRED: API secret from https://dashboard.airthings.com/integrations/api-integration",
                 icon = "gear",
             ),
             schema.Text(
                 id = "clientId",
                 name = "AirThings API Client Id",
-                desc = "Client Id from https://dashboard.airthings.com/integrations/api-integration",
+                desc = "REQUIRED: Client Id from https://dashboard.airthings.com/integrations/api-integration",
                 icon = "gear",
             ),
             schema.Text(
                 id = "serialNumber",
                 name = "Serial Number for AirThings Device",
-                desc = "Taken from the target device on https://dashboard.airthings.com/",
+                desc = "REQUIRED: Taken from the target device on https://dashboard.airthings.com/",
                 icon = "gear",
             ),
             schema.Toggle(
                 id = "skipRenderIfAllGreen",
                 name = "Skip Render If All Green",
                 desc = "If all readings are normal, skip rendering this applet",
+                icon = "arrowLeft",
+                default = False,
+            ),
+            schema.Toggle(
+                id = "onlyDisplayNotNormal",
+                name = "Only display non-normal readings",
+                desc = "Only displays readings that are not normal (green). NOTE: Ignores individual preferences below when enabled.",
                 icon = "arrowLeft",
                 default = False,
             ),

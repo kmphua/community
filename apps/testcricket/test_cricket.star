@@ -5,16 +5,33 @@ Description: This app takes the selected team and displays the current match sit
 Author: M0ntyP
 
 v1.0 - Original app published
-v1.1 - A few updates...
+
+v1.1
 Team score formatting when total is < 10 and < 100 so it lines up with batsmen scores properly
 Using "mobile" names for batsmen & bowlers with names longer than 10 chars
 Status message updates - removed last bowler bowling figures from the long breaks
 Combined "scheduled" and "pre" match states 
 Added Zimbabwe, Afghanistan and Ireland as teams you can select
+
+v1.2
+Added Team Innings to scoreboard
+Show 'need' not 'trail' in the 4th innings
+Only use mobileName if it exists
+
+v1.3
+Fixed bug regarding API URL which now requires Series ID also
+
+v1.3a
+Updated caching function
+
+v1.4 - Published 9/6/23
+Future fixtures are now shown for selected team rather than immediate fixtures
+
+v1.5
+Updated final score display, using '&' instead of comma
+Fixed bug for "need to win" amount in 4th innings
 """
 
-load("cache.star", "cache")
-load("encoding/base64.star", "base64")
 load("encoding/json.star", "json")
 load("http.star", "http")
 load("humanize.star", "humanize")
@@ -24,10 +41,13 @@ load("schema.star", "schema")
 load("time.star", "time")
 
 LiveGames_URL = "https://hs-consumer-api.espncricinfo.com/v1/pages/matches/current?lang=en&latest=true"
+FutureGames = "https://hs-consumer-api.espncricinfo.com/v1/pages/team/schedule?lang=en&teamId="
+
 DEFAULT_TIMEZONE = "Australia/Adelaide"
 DEFAULT_TEAM = "2"  # Australia
 MATCH_CACHE = 60
 ALL_MATCH_CACHE = 2 * 3600  # 2 hours
+FUTURE_FIXTURE_CACHE = 6 * 3600  # 6 hours
 
 def main(config):
     timezone = config.get("$tz", DEFAULT_TIMEZONE)
@@ -44,6 +64,7 @@ def main(config):
     # Initialising variables to satisfy lint
     Playing = False
     MatchID = 0
+    SeriesID = 0
     LastOut_Name = ""
     LastOut_Runs = 0
     Status2 = ""
@@ -61,11 +82,13 @@ def main(config):
         if Matches[x]["teams"][0]["team"]["id"] == SelectedTeam:
             if Matches[x]["format"] == "TEST":
                 MatchID = Matches[x]["objectId"]
+                SeriesID = Matches[x]["series"]["objectId"]
                 Playing = True
                 break
         elif Matches[x]["teams"][1]["team"]["id"] == SelectedTeam:
             if Matches[x]["format"] == "TEST":
                 MatchID = Matches[x]["objectId"]
+                SeriesID = Matches[x]["series"]["objectId"]
                 Playing = True
                 break
         else:
@@ -73,7 +96,8 @@ def main(config):
 
     if Playing == True:
         MatchID = str(MatchID)
-        Match_URL = "https://hs-consumer-api.espncricinfo.com/v1/pages/match/details?lang=en&seriesId=" + MatchID + "&matchId=" + MatchID + "&latest=true"
+        SeriesID = str(SeriesID)
+        Match_URL = "https://hs-consumer-api.espncricinfo.com/v1/pages/match/details?lang=en&seriesId=" + SeriesID + "&matchId=" + MatchID + "&latest=true"
 
         # cache specific match data for 1 minute
         MatchData = get_cachable_data(Match_URL, MATCH_CACHE)
@@ -88,6 +112,12 @@ def main(config):
             Wickets = Match_JSON["scorecard"]["innings"][Innings]["wickets"]
             Runs = Match_JSON["scorecard"]["innings"][Innings]["runs"]
 
+            # What inning for the batting side
+            if Innings == 0 or Innings == 1:
+                TeamInn = "1st"
+            else:
+                TeamInn = "2nd"
+
             # In front or behind? And how much?
             Lead_or_Trail = Match_JSON["scorecard"]["innings"][Innings]["lead"]
 
@@ -95,6 +125,10 @@ def main(config):
                 trail = True
             else:
                 trail = False
+
+            # if 4th innings of the match, show what they need to win
+            if Innings == 3:
+                Lead_or_Trail = Lead_or_Trail - 1
 
             Lead_or_Trail = math.fabs(Lead_or_Trail)
             Lead_or_Trail = humanize.ftoa(Lead_or_Trail)
@@ -104,9 +138,9 @@ def main(config):
             else:
                 Lead = " trail " + Lead_or_Trail
 
-            # How many overs bowled in this innings
-            Overs = Match_JSON["scorecard"]["innings"][Innings]["overs"]
-            Overs = str(Overs)
+            # if 4th innings of the match, show what they need to win
+            if Innings == 3:
+                Lead = " need " + Lead_or_Trail
 
             # How many overs left in the day
             RemOvers = Match_JSON["match"]["liveOversPending"]
@@ -126,8 +160,9 @@ def main(config):
 
             # On strike batsman details
             Batsman1 = Match_JSON["livePerformance"]["batsmen"][0]["player"]["fieldingName"]
-            if len(Batsman1) > 10:
-                Batsman1 = Match_JSON["livePerformance"]["batsmen"][0]["player"]["mobileName"]
+            if len(Batsman1) > 11:
+                if len(Match_JSON["livePerformance"]["batsmen"][0]["player"]["mobileName"]) > 1:
+                    Batsman1 = Match_JSON["livePerformance"]["batsmen"][0]["player"]["mobileName"]
             Batsman1_Runs = Match_JSON["livePerformance"]["batsmen"][0]["runs"]
 
             # Partnership details
@@ -142,6 +177,10 @@ def main(config):
             WicketsInt = int(Wickets)
             if WicketsInt > 0:
                 LastOut_Name = Match_JSON["scorecard"]["innings"][Innings]["inningWickets"][WicketsInt - 1]["player"]["fieldingName"]
+                if len(LastOut_Name) > 11:
+                    if len(Match_JSON["scorecard"]["innings"][Innings]["inningWickets"][WicketsInt - 1]["player"]["mobileName"]) > 1:
+                        LastOut_Name = Match_JSON["scorecard"]["innings"][Innings]["inningWickets"][WicketsInt - 1]["player"]["mobileName"]
+
                 LastOut_Runs = Match_JSON["scorecard"]["innings"][Innings]["inningWickets"][WicketsInt - 1]["runs"]
 
             # check if there is a second batsmen out there, this applies at fall of wicket & end of innings
@@ -149,8 +188,9 @@ def main(config):
 
             if Batsmen == 2:
                 Batsman2 = Match_JSON["livePerformance"]["batsmen"][1]["player"]["fieldingName"]
-                if len(Batsman2) > 10:
-                    Batsman2 = Match_JSON["livePerformance"]["batsmen"][1]["player"]["mobileName"]
+                if len(Batsman2) > 11:
+                    if len(Match_JSON["livePerformance"]["batsmen"][1]["player"]["mobileName"]) > 1:
+                        Batsman2 = Match_JSON["livePerformance"]["batsmen"][1]["player"]["mobileName"]
                 Batsman2_Runs = Match_JSON["livePerformance"]["batsmen"][1]["runs"]
                 Batsman2_Runs_Str = str(Batsman2_Runs)
 
@@ -306,7 +346,7 @@ def main(config):
                     children = [
                         render.Column(
                             children = [
-                                TeamScore(BattingTeam, BattingTeamColor, Wickets, Runs),
+                                TeamScore(BattingTeam, BattingTeamColor, TeamInn, Wickets, Runs),
                                 BatsmanScore(Batsman1, Batsman1_Runs_Str, BatsmanColor),
                                 BatsmanScore(Batsman2, Batsman2_Runs_Str, Batsman2Color),
                                 StatusRow(Status, StatusColor),
@@ -314,7 +354,7 @@ def main(config):
                         ),
                         render.Column(
                             children = [
-                                TeamScore(BattingTeam, BattingTeamColor, Wickets, Runs),
+                                TeamScore(BattingTeam, BattingTeamColor, TeamInn, Wickets, Runs),
                                 BatsmanScore(Batsman1, Batsman1_Runs_Str, BatsmanColor),
                                 BatsmanScore(Batsman2, Batsman2_Runs_Str, Batsman2Color),
                                 StatusRow(Status2, Status2Color),
@@ -322,7 +362,7 @@ def main(config):
                         ),
                         render.Column(
                             children = [
-                                TeamScore(BattingTeam, BattingTeamColor, Wickets, Runs),
+                                TeamScore(BattingTeam, BattingTeamColor, TeamInn, Wickets, Runs),
                                 BatsmanScore(Batsman1, Batsman1_Runs_Str, BatsmanColor),
                                 BatsmanScore(Batsman2, Batsman2_Runs_Str, Batsman2Color),
                                 StatusRow(Status3, Status3Color),
@@ -330,7 +370,7 @@ def main(config):
                         ),
                         render.Column(
                             children = [
-                                TeamScore(BattingTeam, BattingTeamColor, Wickets, Runs),
+                                TeamScore(BattingTeam, BattingTeamColor, TeamInn, Wickets, Runs),
                                 BatsmanScore(Batsman1, Batsman1_Runs_Str, BatsmanColor),
                                 BatsmanScore(Batsman2, Batsman2_Runs_Str, Batsman2Color),
                                 StatusRow(Status4, Status4Color),
@@ -338,7 +378,7 @@ def main(config):
                         ),
                         render.Column(
                             children = [
-                                TeamScore(BattingTeam, BattingTeamColor, Wickets, Runs),
+                                TeamScore(BattingTeam, BattingTeamColor, TeamInn, Wickets, Runs),
                                 BatsmanScore(Batsman1, Batsman1_Runs_Str, BatsmanColor),
                                 BatsmanScore(Batsman2, Batsman2_Runs_Str, Batsman2Color),
                                 StatusRow(Status5, Status5Color),
@@ -499,48 +539,225 @@ def main(config):
                 ),
             )
 
-        # No live games or recent games
+        # Nothing found in the immediate match list
     elif Playing == False:
-        Name = getTeamDisplayName(SelectedTeam)
-        Color = getTeamFontColor(SelectedTeam)
+        # look at future fixtures for selected team
+        FutureGames_URL = FutureGames + str(SelectedTeam)
 
-        return render.Root(
-            child = render.Column(
-                main_align = "start",
-                cross_align = "start",
-                children = [
-                    render.Row(
-                        expanded = True,
-                        main_align = "space_between",
-                        cross_align = "end",
-                        children = [
-                            render.Box(width = 64, height = 12, child = render.Text(content = Name, color = Color, font = "CG-pixel-3x5-mono")),
-                        ],
-                    ),
-                    render.Row(
-                        expanded = True,
-                        main_align = "space_between",
-                        cross_align = "end",
-                        children = [
-                            render.Box(width = 64, height = 8, child = render.Text(content = "No games", color = "#FFF", font = "CG-pixel-3x5-mono")),
-                        ],
-                    ),
-                    render.Row(
-                        expanded = True,
-                        main_align = "space_between",
-                        cross_align = "end",
-                        children = [
-                            render.Box(width = 64, height = 6, child = render.Text(content = "scheduled", color = "#FFF", font = "CG-pixel-3x5-mono")),
-                        ],
-                    ),
-                ],
-            ),
-        )
+        # get data, hold cache for 6 hrs
+        FutureMatchData = get_cachable_data(FutureGames_URL, FUTURE_FIXTURE_CACHE)
+        FutureGames_JSON = json.decode(FutureMatchData)
+
+        Matches = FutureGames_JSON["content"]["matches"]
+
+        # find next scheduled test match
+        for x in range(0, len(Matches), 1):
+            if Matches[x]["teams"][0]["team"]["id"] == SelectedTeam:
+                if Matches[x]["format"] == "TEST":
+                    if Matches[x]["stage"] == "SCHEDULED":
+                        MatchID = Matches[x]["objectId"]
+                        SeriesID = Matches[x]["series"]["objectId"]
+                        break
+
+            elif Matches[x]["teams"][1]["team"]["id"] == SelectedTeam:
+                if Matches[x]["format"] == "TEST":
+                    if Matches[x]["stage"] == "SCHEDULED":
+                        MatchID = Matches[x]["objectId"]
+                        SeriesID = Matches[x]["series"]["objectId"]
+                        break
+
+        # if we found something, extract the info for their next fixture and display
+        if SeriesID != 0:
+            Match_URL = "https://hs-consumer-api.espncricinfo.com/v1/pages/match/details?lang=en&seriesId=" + str(SeriesID) + "&matchId=" + str(MatchID) + "&latest=true"
+
+            # get data, hold cache for 6 hrs
+            MatchData = get_cachable_data(Match_URL, FUTURE_FIXTURE_CACHE)
+            Match_JSON = json.decode(MatchData)
+
+            # Get match details, teams & colors
+            Title = Match_JSON["match"]["title"]
+            HomeTeam = Match_JSON["match"]["teams"][0]["team"]["name"]
+            AwayTeam = Match_JSON["match"]["teams"][1]["team"]["name"]
+
+            Team1_ID = Match_JSON["match"]["teams"][0]["team"]["id"]
+            Team2_ID = Match_JSON["match"]["teams"][1]["team"]["id"]
+            Team1_Color = getTeamFontColor(Team1_ID)
+            Team2_Color = getTeamFontColor(Team2_ID)
+
+            # Get the dates & venue
+            startDate = Match_JSON["match"]["startDate"]
+            endDate = Match_JSON["match"]["endDate"]
+            sDate = time.parse_time(startDate, format = "2006-01-02T15:04:00.000Z").in_location(timezone)
+            eDate = time.parse_time(endDate, format = "2006-01-02T15:04:00.000Z").in_location(timezone)
+            sDate = sDate.format("Jan 2")
+            eDate = eDate.format("Jan 2")
+            schedDate = sDate + " - " + eDate
+            Venue = Match_JSON["match"]["ground"]["smallName"]
+
+            # display with rotation between match title, dates & venue
+            return render.Root(
+                delay = int(3000),
+                child = render.Animation(
+                    children = [
+                        render.Column(
+                            main_align = "start",
+                            cross_align = "start",
+                            children = [
+                                render.Row(
+                                    expanded = True,
+                                    main_align = "space_between",
+                                    cross_align = "end",
+                                    children = [
+                                        render.Box(width = 64, height = 8, child = render.Text(content = HomeTeam, color = Team1_Color, font = "CG-pixel-3x5-mono")),
+                                    ],
+                                ),
+                                render.Row(
+                                    expanded = True,
+                                    main_align = "space_between",
+                                    cross_align = "end",
+                                    children = [
+                                        render.Box(width = 64, height = 8, child = render.Text(content = "v", color = "#FFF", font = "CG-pixel-3x5-mono")),
+                                    ],
+                                ),
+                                render.Row(
+                                    expanded = True,
+                                    main_align = "space_between",
+                                    cross_align = "end",
+                                    children = [
+                                        render.Box(width = 64, height = 8, child = render.Text(content = AwayTeam, color = Team2_Color, font = "CG-pixel-3x5-mono")),
+                                    ],
+                                ),
+                                render.Row(
+                                    expanded = True,
+                                    main_align = "space_between",
+                                    cross_align = "end",
+                                    children = [
+                                        render.Box(width = 64, height = 8, child = render.Text(content = Title, color = "#FFF", font = "CG-pixel-3x5-mono")),
+                                    ],
+                                ),
+                            ],
+                        ),
+                        render.Column(
+                            main_align = "start",
+                            cross_align = "start",
+                            children = [
+                                render.Row(
+                                    expanded = True,
+                                    main_align = "space_between",
+                                    cross_align = "end",
+                                    children = [
+                                        render.Box(width = 64, height = 8, child = render.Text(content = HomeTeam, color = Team1_Color, font = "CG-pixel-3x5-mono")),
+                                    ],
+                                ),
+                                render.Row(
+                                    expanded = True,
+                                    main_align = "space_between",
+                                    cross_align = "end",
+                                    children = [
+                                        render.Box(width = 64, height = 8, child = render.Text(content = "v", color = "#FFF", font = "CG-pixel-3x5-mono")),
+                                    ],
+                                ),
+                                render.Row(
+                                    expanded = True,
+                                    main_align = "space_between",
+                                    cross_align = "end",
+                                    children = [
+                                        render.Box(width = 64, height = 8, child = render.Text(content = AwayTeam, color = Team2_Color, font = "CG-pixel-3x5-mono")),
+                                    ],
+                                ),
+                                render.Row(
+                                    expanded = True,
+                                    main_align = "space_between",
+                                    cross_align = "end",
+                                    children = [
+                                        render.Box(width = 64, height = 8, child = render.Text(content = schedDate, color = "#FFF", font = "CG-pixel-3x5-mono")),
+                                    ],
+                                ),
+                            ],
+                        ),
+                        render.Column(
+                            main_align = "start",
+                            cross_align = "start",
+                            children = [
+                                render.Row(
+                                    expanded = True,
+                                    main_align = "space_between",
+                                    cross_align = "end",
+                                    children = [
+                                        render.Box(width = 64, height = 8, child = render.Text(content = HomeTeam, color = Team1_Color, font = "CG-pixel-3x5-mono")),
+                                    ],
+                                ),
+                                render.Row(
+                                    expanded = True,
+                                    main_align = "space_between",
+                                    cross_align = "end",
+                                    children = [
+                                        render.Box(width = 64, height = 8, child = render.Text(content = "v", color = "#FFF", font = "CG-pixel-3x5-mono")),
+                                    ],
+                                ),
+                                render.Row(
+                                    expanded = True,
+                                    main_align = "space_between",
+                                    cross_align = "end",
+                                    children = [
+                                        render.Box(width = 64, height = 8, child = render.Text(content = AwayTeam, color = Team2_Color, font = "CG-pixel-3x5-mono")),
+                                    ],
+                                ),
+                                render.Row(
+                                    expanded = True,
+                                    main_align = "space_between",
+                                    cross_align = "end",
+                                    children = [
+                                        render.Box(width = 64, height = 8, child = render.Text(content = Venue, color = "#FFF", font = "CG-pixel-3x5-mono")),
+                                    ],
+                                ),
+                            ],
+                        ),
+                    ],
+                ),
+            )
+
+        else:
+            Name = getTeamDisplayName(SelectedTeam)
+            Color = getTeamFontColor(SelectedTeam)
+
+            return render.Root(
+                child = render.Column(
+                    main_align = "start",
+                    cross_align = "start",
+                    children = [
+                        render.Row(
+                            expanded = True,
+                            main_align = "space_between",
+                            cross_align = "end",
+                            children = [
+                                render.Box(width = 64, height = 12, child = render.Text(content = Name, color = Color, font = "CG-pixel-3x5-mono")),
+                            ],
+                        ),
+                        render.Row(
+                            expanded = True,
+                            main_align = "space_between",
+                            cross_align = "end",
+                            children = [
+                                render.Box(width = 64, height = 8, child = render.Text(content = "No upcoming", color = "#FFF", font = "CG-pixel-3x5-mono")),
+                            ],
+                        ),
+                        render.Row(
+                            expanded = True,
+                            main_align = "space_between",
+                            cross_align = "end",
+                            children = [
+                                render.Box(width = 64, height = 6, child = render.Text(content = "test matches", color = "#FFF", font = "CG-pixel-3x5-mono")),
+                            ],
+                        ),
+                    ],
+                ),
+            )
 
     # should never get here but lint wanted it
     return None
 
-def TeamScore(BattingTeam, BattingTeamColor, Wickets, Runs):
+def TeamScore(BattingTeam, BattingTeamColor, TeamInn, Wickets, Runs):
     # if all out
     if Wickets != "10":
         Wickets = Wickets + "/"
@@ -561,7 +778,7 @@ def TeamScore(BattingTeam, BattingTeamColor, Wickets, Runs):
                         pad = (2, 1, 0, 0),
                         child = render.Marquee(
                             width = 40,
-                            child = render.Text(content = BattingTeam, color = BattingTeamColor, font = "CG-pixel-3x5-mono", offset = 0),
+                            child = render.Text(content = BattingTeam + " " + TeamInn, color = BattingTeamColor, font = "CG-pixel-4x5-mono", offset = 0),
                         ),
                     )),
                     render.Box(width = 24, height = 8, child = render.Text(content = Wickets + Runs, color = BattingTeamColor, font = "CG-pixel-3x5-mono")),
@@ -587,25 +804,38 @@ def FinalTeamScore(BattingTeam, BattingTeamColor, Wickets1, Runs1, Wickets2, Run
         Output2 = str(Wickets2) + "/" + str(Runs2)
 
     if CommaOn == True:
-        Comma = ","
+        Comma = " & "
     else:
         Comma = ""
 
-    return render.Column(
+    return render.Row(
+        expanded = True,
+        main_align = "space_between",
         children = [
             render.Row(
+                main_align = "start",
                 children = [
-                    render.Box(width = 16, height = 8, child = render.Padding(
-                        pad = (5, 0, 0, 0),
-                        child = render.Marquee(
-                            width = 20,
-                            child = render.Text(content = BattingTeam, color = BattingTeamColor, font = "CG-pixel-3x5-mono", offset = 0),
+                    render.Padding(
+                        pad = (1, 2, 0, 1),
+                        child = render.Text(
+                            content = BattingTeam,
+                            color = BattingTeamColor,
+                            font = "CG-pixel-3x5-mono",
                         ),
-                    )),
-                    render.Box(width = 48, height = 8, child = render.Padding(
-                        pad = (0, 0, 0, 0),
-                        child = render.Text(content = Output + Comma + Output2, color = BattingTeamColor, font = "CG-pixel-3x5-mono"),
-                    )),
+                    ),
+                ],
+            ),
+            render.Row(
+                main_align = "end",
+                children = [
+                    render.Padding(
+                        pad = (0, 2, 0, 1),
+                        child = render.Text(
+                            content = Output + Comma + Output2,
+                            color = BattingTeamColor,
+                            font = "CG-pixel-3x5-mono",
+                        ),
+                    ),
                 ],
             ),
         ],
@@ -632,7 +862,6 @@ def BatsmanScore(Batsman, Runs, BatsmanColor):
     )
 
 def StatusRow(StatusMsg, StatusColor):
-    #print(StatusMsg)
     return render.Row(
         children = [
             render.Box(width = 64, height = 8, child = render.Text(content = StatusMsg, color = StatusColor, font = "CG-pixel-3x5-mono")),
@@ -754,17 +983,9 @@ def get_schema():
     )
 
 def get_cachable_data(url, timeout):
-    key = base64.encode(url)
+    res = http.get(url = url, ttl_seconds = timeout)
 
-    data = cache.get(key)
-    if data != None:
-        #print("CACHED")
-        return base64.decode(data)
-
-    res = http.get(url = url)
     if res.status_code != 200:
         fail("request to %s failed with status code: %d - %s" % (url, res.status_code, res.body()))
-
-    cache.set(key, base64.encode(res.body()), ttl_seconds = timeout)
 
     return res.body()
